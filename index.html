@@ -228,7 +228,7 @@
     </script>
 
     <script type="text/babel">
-        const { useState, useEffect } = React;
+        const { useState, useEffect, useRef } = React;
 
         // --- ICONS ---
         const Icon = ({ name, className = "w-5 h-5" }) => {
@@ -249,7 +249,9 @@
                 Key: <g><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></g>,
                 ExternalLink: <g><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" x2="21" y1="14" y2="3"/></g>,
                 Info: <g><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="16" y2="12"/><line x1="12" x2="12.01" y1="8" y2="8"/></g>,
-                CheckCircle: <g><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></g>
+                CheckCircle: <g><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></g>,
+                Save: <g><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></g>,
+                Upload: <g><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></g>
             };
             return (
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -363,11 +365,13 @@
             const apiKeyToUse = userApiKey || "";
             if (!apiKeyToUse) throw new Error("Mohon masukkan API Key Google Gemini Anda di menu samping.");
 
-            const modelsToTry = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.5-flash-preview-09-2025'];
+            // Daftar auto-fallback HANYA model flash (Model Pro dihilangkan)
+            const modelsToTry = ['gemini-2.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-flash'];
 
             const fullPrompt = `TUGAS: Anda adalah asisten pakar Manajemen Risiko Fasyankes. Berikan hasil HANYA dalam format JSON valid tanpa penjelasan apapun.\n\nSKEMA JSON:\n${JSON.stringify(schemaFormat, null, 2)}\n\nPERINTAH:\n${prompt}`;
             
             let lastError = "";
+            let isRateLimited = false;
 
             for (const model of modelsToTry) {
                 const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKeyToUse}`;
@@ -388,8 +392,16 @@
                         
                         if (!response.ok) {
                             lastError = data.error?.message || `HTTP Error ${response.status}`;
+                            
                             if (response.status === 400 && lastError.toLowerCase().includes("api key not valid")) {
-                                throw new Error("API Key tidak valid."); 
+                                throw new Error("API_KEY_INVALID"); 
+                            }
+                            if (response.status === 429) {
+                                isRateLimited = true;
+                                throw new Error("RATE_LIMIT");
+                            }
+                            if (response.status === 404) {
+                                throw new Error("NOT_FOUND");
                             }
                             throw new Error(lastError);
                         }
@@ -414,16 +426,27 @@
                         
                         return JSON.parse(cleanJson); 
                     } catch (e) {
-                        lastError = e.message;
-                        if (lastError === "API Key tidak valid.") throw e; 
-                        if (lastError.includes("not found")) break; 
+                        if (e.message === "API_KEY_INVALID") throw new Error("API Key tidak valid."); 
+                        if (e.message === "NOT_FOUND") break; // Langsung lompat ke model berikutnya tanpa retry
+                        
+                        if (e.message === "RATE_LIMIT") {
+                            lastError = "API sedang sibuk. Menunggu akses...";
+                        } else {
+                            lastError = e.message;
+                        }
                         
                         if (retry < 2) { 
+                            // Terhenti sesaat / jeda eksponensial menunggu akses API sesuai logika asli Anda
                             await new Promise(res => setTimeout(res, delay)); 
                             delay *= 2; 
                         }
                     }
                 }
+            }
+            
+            // Jika semua model gagal setelah proses jeda dan fallback
+            if (isRateLimited) {
+                throw new Error("Limit Quota / Server Sibuk. Mohon jeda 1 menit lalu klik tombol lagi.");
             }
             throw new Error(lastError || "Koneksi ke AI bermasalah.");
         };
@@ -436,6 +459,8 @@
             const [apiKeyInput, setApiKeyInput] = useState(() => localStorage.getItem('simr_key') || '');
             const [apiKey, setApiKey] = useState(() => localStorage.getItem('simr_key') || '');
             const [activeModel, setActiveModel] = useState(apiKey ? 'Menunggu AI...' : 'API Key Kosong');
+
+            const fileInputRef = useRef(null);
 
             useEffect(() => {
                 const handleModel = (e) => setActiveModel(e.detail);
@@ -483,6 +508,40 @@
             ]);
 
             const [printFormType, setPrintFormType] = useState('SEMUA');
+
+            // --- FITUR SIMPAN & MUAT DRAFT ---
+            const handleSaveDraft = () => {
+                const data = { profil, konteks, risiko };
+                const jsonStr = JSON.stringify(data, null, 2);
+                const blob = new Blob([jsonStr], { type: "text/plain" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `draft-simr-${profil.tanggal}.txt`;
+                a.click();
+                URL.revokeObjectURL(url);
+                showToast("✅ Draft berhasil disimpan ke format TXT.");
+            };
+
+            const handleLoadDraft = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    try {
+                        const data = JSON.parse(event.target.result);
+                        if (data.profil) setProfil(data.profil);
+                        if (data.konteks) setKonteks(data.konteks);
+                        if (data.risiko) setRisiko(data.risiko);
+                        showToast("✅ Draft berhasil dimuat dan data telah diperbarui.");
+                    } catch (error) {
+                        showToast("❌ File draft tidak valid atau rusak.");
+                    }
+                };
+                reader.readAsText(file);
+                e.target.value = ""; // Reset input after reading
+            };
 
             const isKlinis = (kat) => kat === 'Klinis / Keselamatan Pasien';
 
@@ -735,6 +794,18 @@
                                 {isSidebarOpen && <span className="text-sm font-semibold truncate">{m.label}</span>}
                             </button>
                         ))}
+                        
+                        <hr className="border-slate-800 my-2 mx-3" />
+                        
+                        <button onClick={handleSaveDraft} className={`w-full flex items-center gap-4 p-3 rounded-xl transition-all hover:bg-slate-800 text-blue-400`}>
+                            <Icon name="Save" />
+                            {isSidebarOpen && <span className="text-sm font-semibold truncate">Simpan Draft (.txt)</span>}
+                        </button>
+                        <button onClick={() => fileInputRef.current.click()} className={`w-full flex items-center gap-4 p-3 rounded-xl transition-all hover:bg-slate-800 text-yellow-400`}>
+                            <Icon name="Upload" />
+                            {isSidebarOpen && <span className="text-sm font-semibold truncate">Muat Draft (.txt)</span>}
+                        </button>
+                        <input type="file" accept=".txt" ref={fileInputRef} onChange={handleLoadDraft} className="hidden" />
                     </nav>
 
                     <div className="p-4 bg-slate-950 border-t border-slate-800 shrink-0">
