@@ -719,7 +719,10 @@
                 showToast("⚡ AI membedah akar masalah (5-Why)...");
                 try {
                     const schema = { rca: { w1: "string", w2: "string", w3: "string", w4: "string", w5: "string", akar: "string", jenis: "Pilih 1: Man/Material/Machine/Method/Kebijakan/Lingkungan" } };
-                    const res = await callGeminiJson(`Lakukan bedah 5-Why RCA mendalam untuk pernyataan risiko: "${r.identifikasi.pernyataan}". Simpulkan akar masalah sistemiknya.`, schema, apiKey);
+                    
+                    // PEMBARUAN PROMPT UNTUK MEMPERTAJAM PENCARIAN PENYEBAB SISTEMIK
+                    const res = await callGeminiJson(`Lakukan bedah 5-Why RCA secara kritis dan mendalam untuk pernyataan risiko: "${r.identifikasi.pernyataan}". ATURAN: Jangan berhenti pada sekadar "human error" atau "kurang dana". Gali terus hingga bermuara pada kegagalan sistemik (kelemahan pada proses, prosedur, pengawasan, desain sistem, atau kebijakan manajemen). Tarik kesimpulan akar masalah sistemiknya dengan tajam, dan klasifikasikan jenis penyebabnya secara presisi.`, schema, apiKey);
+                    
                     setRisiko(prev => prev.map(item => item.id === rId ? { ...item, rca: res.rca } : item));
                     showToast("✅ Analisis RCA Selesai.");
                 } catch (e) { showToast(`❌ Gagal: ${e.message}`); }
